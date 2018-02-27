@@ -8,6 +8,7 @@ Created on Sat Feb 24 17:43:26 2018
 
 import numpy as np
 import pandas as pd
+import re
 import scipy.spatial as spatial
 
 def choose_reliable_points(vidpoints, actpoints, threshold=0.1):
@@ -80,6 +81,60 @@ def choose_reliable_points(vidpoints, actpoints, threshold=0.1):
     return(indices, good_dists)
 
 
+
+
+def convert_DLTdv5_to_xyz(DLTdv5_pt):
+    '''Converts the slightly modified outputs of the DLTdv5 trajectory output
+    into a long form data set with x y z t columns.
+
+    Parameters:
+
+        DLTdv5_pt : pd.DataFrame with following columns:
+            pt1_X,pt1_Y,pt1_Z....ptN_X,ptN_Y,ptN_Z, t_rec
+
+            pt1_X, pt1_Y, pt1_Z : contain the xyz coordinates for each trajectory
+                        In the DLTdv5 system, each point number refers to a
+                        single trajectory.
+
+            t_rec : float. This is the time-stamp of frame capture with
+                    reference to the synchronised audio recording.
+
+    Returns:
+
+        DLTDv5xyz_t : pd.DataFrame. A long version of the raw pd.DataFrame
+                    with the following columns:
+
+                x ,y, z : the xyz coordinates of each trajectories points
+
+                traj_num : int. the trajectory number
+
+                t : float. The time of recording of the video frame.
+
+    '''
+    DLTdv5_xyz = DLTdv5_pt.drop('t_rec',axis=1)
+    numrows, numcols = DLTdv5_xyz.shape
+
+    if numcols % 3 != 0 :
+        raise IndexError('Number of columns not a multiple of 3 ! : ' + str(numcols))
+
+    container_pd = pd.DataFrame()
+    for each_point in range(1, int(numcols/3.0)+1):
+
+        colnames = [ 'pt'+str(each_point)+'_'+each_axis for each_axis in ['X','Y','Z']   ]
+        colnames.append('t_rec')
+
+        pt_trajs = DLTdv5_pt[colnames]
+        pt_trajs['traj_num'] = each_point
+        pt_trajs.columns = ['x','y','z','t','traj_num']
+
+        container_pd = pd.concat([container_pd,pt_trajs])
+
+    container_pd = container_pd.reset_index(drop=True)
+
+    return(container_pd)
+
+
+
 def perform_rigidtransform( xyzpts, trform_mat):
     ''' Performs a rigid transform on points in the a reference frame
     into another using a given transform matrix.
@@ -105,7 +160,7 @@ def perform_rigidtransform( xyzpts, trform_mat):
     return(trformd_pts)
 
 
-def assign_to_trajectory(knwn_trajpts, unknwn_trajpts, time_window=0.1):
+def assign_to_trajectory(knwn_trajpts, unknwn_trajpts, stringency_params):
     '''Assigns a set of unknown points to a set of known labelled trajectories.
 
 TODO :
@@ -127,14 +182,24 @@ TODO :
                         has the following columns:
             x, y, z, t - see above for the description of columns.
 
+        stringency_params: dictionary. Parameters that decide how close the
+                            unlabelled points need to be in space and time to
+                            be assigned to a given trajectory.
 
-        time_window : float. The time window to consider while trying to -
-                        match the unlabelled points to a trajectory.
+                time_win : float. The time window in seconds to consider
+                              while trying to match the unlabelled points to
+                              a trajectory.
 
-                        Setting this too wide means that there will be potenti-
-                        ally many matches. Setting this too narrow could
-                        mean that in case there are no points in that time-win-
-                        dow, then no trajectory is labelled !
+                            Setting this too wide means that there will be pot-
+                            entially many matches. Setting this too narrow coul
+                            -d mean that in case there are no points in that t-
+                            ime-window, then no trajectory is labelled !
+
+                prox_thres : float. The proxity threshold is the maximum eucli
+                            dean distance permitted between the unlabelled
+                            points and the labelled trajectories.
+
+
 
     Returns :
 
@@ -157,26 +222,70 @@ TODO :
 
     labeled_pts = pd.DataFrame()
 
-    for row_num, unlabd_point in unknwn_trajpts.iterrows():
+    num_unknpts, _ = unknwn_trajpts.shape
 
-        knwn_inwindow = choose_knownpts_intimewindow()
+    for row_num, row in enumerate(unknwn_trajpts.itertuples(),1):
 
-        closest_knwnpt, closest_trajs = find_closest_trajectory(knwn_inwindow,
-                                                                unlabd_point)
-
-        labeled_pts.append([unlabd_point, closest_trajs, closest_knwnpt])
-
-    #return(labeled_pts)
-    pass
+        unlabd_data = np.array([row.x,row.y,row.z,row.t]).reshape((1,4))
+        unlabd_point = pd.DataFrame(data=unlabd_data)
+        unlabd_point.columns=['x','y','z','t']
 
 
-def choose_knownpts_intimewindow(knwn_pts, time_window):
+        knwn_inwindow = choose_knownpts_intimewindow(knwn_trajpts,
+                                         unlabd_point['t'],
+                                                stringency_params['time_win'])
+
+        closest_knwnpts, closest_trajs = find_closest_trajectory(unlabd_point,
+                                                knwn_inwindow,
+                                            stringency_params['prox_thres'])
+
+
+        labeld_and_candidate_df = create_candidatepoint_df(unlabd_point,
+                                               closest_knwnpts,  closest_trajs)
+
+        labeled_pts = labeled_pts.append(labeld_and_candidate_df,
+                                                             ignore_index=True)
+
+    return(labeled_pts)
+
+
+
+def choose_knownpts_intimewindow(knwn_pts, time_stamp, time_window):
+    '''Chooses a subset of a pd.DataFrame with time that falls within
+    a given time stamp.
+
+    Eg. If the time_stamp is 0.2 , and the time_window is 0.1, then all
+    rows with      0.15<=knwn_pts['t']<=0.25 will be returned.
+
+    Parameters:
+
+        knwn_pts : pd.DataFrame with at least the following columns:
+            x: x-coordinate
+            y: y-coordinate
+            z: z-coordinate
+            t: time
+
+        time_stamp : float. Time point around which the time window is centred.
+
+        time_window : float >0. The length of the time window around the time
+                        stamp.
+
+
+    Returns:
+
+        knwn_inwin : pd.DataFrame. A subset of knwn_pts rows that fall within
+                     the time window centred on the time stamp. This can also
+                     be an empty row if there are no rows that fulfil this
+                     condition.
+
     '''
-    '''
-    win_start = knwn_pts['t']-time_window/2.0
-    win_end = knwn_pts['t']+time_window/2.0
+    if time_window <= 0 :
+        raise ValueError('Time window length cannot be <= 0! ')
 
-    knwn_inwin = knwn_pts[ (knwn_pts['t']>= win_start) &((knwn_pts['t']<= win_end)) ]
+    win_start = float(time_stamp) - time_window/2.0
+    win_end = float(time_stamp) + time_window/2.0
+
+    knwn_inwin = knwn_pts[(knwn_pts['t']>= win_start) & (knwn_pts['t']<= win_end) ]
 
     return(knwn_inwin)
 
@@ -190,30 +299,92 @@ def find_closest_trajectory(focal_pt, labld_pts, dist_threshold):
                     x, y, z, t
 
         labld_pts : Npoints x 5 pd.DataFrame with the following column names:
-                    x , y, z, t, traj_number
+                    x , y, z, t, traj_num
 
 
     Returns :
 
-        closest_labdpt : pd.DataFrame. with the closest labelled point
+        closest_labdpt : pd.DataFrame. with the closest labelled point/s
 
-        traj_num: pd.DataFrame. label number of the known trajectory
-
-    TODO :
-        1) Take care of multiple-matching case
-        2) What happens if a trajectory number is a NaN
+        traj_num: pd.DataFrame. label number/s of the known trajectory
 
     '''
-    distances = labld_pts[['x','y','z']].apply(spatial.distance.euclidean,1,
+    distances = labld_pts[['x','y','z']].apply(calc_euc_distance,1,
                                                 v= focal_pt[['x','y','z']])
     closest_ptind = distances <= dist_threshold
 
-    traj_num = labld_pts['traj_num'][closest_ptind]
-#    if np.isnan(traj_num):
-#        raise ValueError('Unassigned trajectory found')
+    traj_num = labld_pts['traj_num'][closest_ptind].reset_index(drop=True)
 
-    closest_labdpt = labld_pts[['x','y','z']][closest_ptind]
+    closest_labdpt = labld_pts[['x','y','z','t']][closest_ptind].reset_index(drop=True)
 
     return(closest_labdpt, traj_num)
 
+
+def calc_euc_distance(u,v):
+    ''' A wrapper function which calculates euclidean distance
+    between two points - *and* accounts for the possibility that
+    in case one set of points has NaNs - then it returns a Nan!
+
+    This was written so that the distance.euclidean function from
+    scipy.spatial could be applied across rows of a pd.DataFrame
+    '''
+    try:
+        d = spatial.distance.euclidean(u,v)
+
+    except:
+        d = np.nan
+
+    return(d)
+
+def create_candidatepoint_df(unlab_pt, candidate_points, trajs):
+    '''Formatting function which replicates the unlabeled point over multiple
+    rows and joins it with the candidate points
+
+    Parameters:
+
+        unlab_pt : 1x 4 pd.DataFrame with the following columns:
+                    x, y, z ,t
+
+        candidate_points : Npoints x 4 pd.DataFrame with folowing columns :
+                    x, y, z, t
+
+        trajs : Npoints x 1 pd.DataFrame with trajectory numbers of each of the
+                candidate points.
+
+
+    Returns:
+
+        candidatepts_df : Npoints x 9 pd.DataFrame with the following columns:
+                    x,y,z : xyz coordinates of the unlabelled point
+                    t : time of recording/emission of the unlabelled point
+                    traj_num : candidate trajectory number of the unlabelled
+                               points
+                   x_knwn, y_knwn, z_knwn : xyz coordinates of the known
+                                trajectory points
+                    t_knwn : time of emission/recording of the known trajectory
+                             point
+    '''
+
+    num_candpoints, _ = candidate_points.shape
+
+
+
+    if num_candpoints >1:
+
+        points_and_trajs = candidate_points.join(trajs)
+        repeated_unlabpts = unlab_pt.append([unlab_pt]*(num_candpoints-1),
+                                            ignore_index=True)
+
+        try:
+            candidatepts_df = repeated_unlabpts.join(points_and_trajs,
+                                                               rsuffix='_knwn')
+        except:
+            repeated_unlabpts = repeated_unlabpts.to_frame()
+            candidatepts_df = repeated_unlabpts.join(points_and_trajs,
+                                                               rsuffix='_knwn')
+
+    else:
+        candidatepts_df = unlab_pt.join(trajs).join(candidate_points,
+                                                               rsuffix='_knwn')
+    return(candidatepts_df)
 
