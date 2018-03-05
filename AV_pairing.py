@@ -388,3 +388,34 @@ def create_candidatepoint_df(unlab_pt, candidate_points, trajs):
                                                                rsuffix='_knwn')
     return(candidatepts_df)
 
+def calc_radial_CI(df_row):
+    ''' Calculates the 'radial confidence interval' (radial_CI) by calculating
+    the maximum radial distance of the point estimate using the confidence
+    intervals given from video tracking. The confidence interval in the xyz
+    are treated as a point centred 0,0,0 and the radial_CI is calculated.
+
+    This function is meant to be applied across multiple rows.
+
+    Parameters:
+
+        df_row : 1x3 pd.DataFrame row containing the xyz confidence intervals
+
+    Returns :
+
+        radial_CI : float. The maximum radial distance of the point estimate
+                    from the current mean estimate.
+
+    '''
+    centre_position = [0,0,0]
+    try:
+        radial_CI = spatial.distance.euclidean(centre_position,df_row)
+        return(radial_CI)
+    except :
+        return(np.nan)
+
+
+
+
+
+
+
