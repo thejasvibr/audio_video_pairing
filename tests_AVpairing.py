@@ -313,6 +313,52 @@ class TestCreateCandidatepointDf(unittest.TestCase):
 
 
 
+class TestCalcRadialCI(unittest.TestCase):
+    '''
+    '''
+
+    def setUp(self):
+        self.threerows_data = {'x':[0,0,1],'y':[1,0,0],'z':[0,1,0]}
+
+    def test_validCIs(self):
+
+
+        xyzCI = pd.DataFrame(data=self.threerows_data)
+        xyzCI['radial_CI'] = xyzCI.apply(calc_radial_CI,1)
+
+        radialCI_same = np.array_equal(np.array(xyzCI['radial_CI']).flatten(),
+                        np.array([1,1,1]))
+
+        self.assertTrue(radialCI_same)
+
+    def test_wholerowNaN(self):
+        for each_axis in ['x','y','z']:
+            self.threerows_data[each_axis].append(np.nan)
+
+        xyzCI = pd.DataFrame(data=self.threerows_data)
+        xyzCI['radial_CI'] = xyzCI.apply(calc_radial_CI,1)
+
+        na_row = np.array(xyzCI.iloc[-1,:] ).flatten()
+
+        self.assertTrue(sum(np.isnan(na_row)),4)
+
+    def test_oneaxisNaN(self):
+        for each_axis in ['x','y','z']:
+            self.threerows_data[each_axis].append(0.5)
+
+        self.threerows_data['x'][-1] = np.nan
+
+        xyzCI = pd.DataFrame(data=self.threerows_data)
+        xyzCI['radial_CI'] = xyzCI.apply(calc_radial_CI,1)
+
+        self.assertTrue(np.isnan(xyzCI.iloc[-1,-1]))
+
+
+
+
+
+
+
 
 
 if __name__ == '__main__':
